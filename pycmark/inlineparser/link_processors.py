@@ -9,7 +9,7 @@
 """
 
 import re
-from typing import Tuple
+from typing import Generator, Tuple
 
 from docutils import nodes
 from docutils.nodes import Element, Text
@@ -37,13 +37,17 @@ class LinkOpenerProcessor(PatternInlineProcessor):
 
 
 class LinkCloserProcessorBase(PatternInlineProcessor):
-    def get_last_opening_brackets(self, document: Element) -> addnodes.bracket:
-        found = None
+    def get_opening_brackets(self, document: Element) -> Generator[addnodes.bracket, None, None]:
         for node in document:
             if isinstance(node, addnodes.bracket) and node['can_open']:
-                found = node
+                yield node
 
-        return found
+    def get_last_opening_brackets(self, document: Element) -> addnodes.bracket:
+        openers = list(self.get_opening_brackets(document))
+        if openers:
+            return openers[-1]
+        else:
+            return None
 
 
 class UnmatchedLinkCloserProcessor(LinkCloserProcessorBase):
@@ -69,19 +73,15 @@ class UnmatchedLinkCloserProcessor(LinkCloserProcessorBase):
 class LinkCloserProcessor(LinkCloserProcessorBase):
     pattern = re.compile(r'\]')
 
+    @backtrack_onerror
     def run(self, reader: TextReader, document: Element) -> bool:
         reader.step(1)
-        document += addnodes.bracket(marker="]", can_open=False, position=reader.position - 1)
-        self.process_link_or_image(reader, document)
+        closer = addnodes.bracket(marker="]", can_open=False, position=reader.position - 1)
+        self.process_link_or_image(reader, document, closer)
         return True
 
-    @backtrack_onerror
-    def process_link_or_image(self, reader: TextReader, document: Element) -> bool:
-        brackets = list(n for n in document.children if isinstance(n, addnodes.bracket))
-        closer = brackets.pop()
-
-        openers = list(d for d in brackets if d['can_open'])
-        opener = openers.pop()
+    def process_link_or_image(self, reader: TextReader, document: Element, closer: addnodes.bracket) -> bool:
+        opener = self.get_last_opening_brackets(document)
 
         try:
             if reader.remain.startswith('('):
@@ -112,36 +112,36 @@ class LinkCloserProcessor(LinkCloserProcessorBase):
             else:
                 # deactivate brackets because no trailing link destination or link-label
                 opener.replace_self(Text(opener['marker']))
-                closer.replace_self(Text(closer['marker']))
                 raise
         elif destination == LABEL_NOT_MATCHED:
             opener.replace_self(Text(opener['marker']))
-            closer.replace_self(Text(closer['marker']))
             raise
 
+        document += self.create_node(title, destination, document, opener)
+        document.remove(opener)
+        return True
+
+    def create_node(self, title: str, destination: str, document: Element, opener: addnodes.bracket) -> Element:
         node: Element = None
         if opener['marker'] == '![':
             from pycmark.transforms import EmphasisConverter  # lazy loading
-            para = transplant_nodes(document, nodes.paragraph(), start=opener, end=closer)
+            para = transplant_nodes(document, nodes.paragraph(), start=opener)
             EmphasisConverter(para).apply()
             node = nodes.image('', uri=destination, alt=para.astext())
             if title:
                 node['title'] = title
         else:
             node = nodes.reference('', refuri=destination)
-            transplant_nodes(document, node, start=opener, end=closer)
+            transplant_nodes(document, node, start=opener)
             if title:
                 node['reftitle'] = title
 
             # deactivate all left brackets before the link
-            for n in openers:
+            for n in self.get_opening_brackets(document):
                 if n['marker'] == '[':
                     n['active'] = False
 
-        document += node
-        document.remove(opener)
-        document.remove(closer)
-        return True
+        return node
 
     @backtrack_onerror
     def parse_link_destination(self, reader: TextReader, document: Element) -> Tuple[str, str]:

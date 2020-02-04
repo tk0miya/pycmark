@@ -74,9 +74,13 @@ def get_root_document(node: Node) -> nodes.document:
     return node
 
 
-def transplant_nodes(parent: Element, new_parent: Element, start: Node, end: Node) -> Element:
+def transplant_nodes(parent: Element, new_parent: Element, start: Node, end: Node = None) -> Element:
     start_pos = parent.index(start)
-    end_pos = parent.index(end)
+    if end is None:
+        end_pos = len(parent)
+    else:
+        end_pos = parent.index(end)
+
     for _ in range(start_pos + 1, end_pos):
         # Note: do not use Element.remove() here.
         # It removes wrong node if the target is Text.
