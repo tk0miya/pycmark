@@ -47,6 +47,8 @@ from pycmark.blockparser.std_processors import (
 from pycmark.inlineparser import InlineProcessor
 from pycmark.inlineparser.link_processors import (
     LinkCloserProcessor,
+    LinkCloserWithDestinationProcessor,
+    LinkCloserWithLabelProcessor,
     LinkOpenerProcessor,
     UnmatchedLinkCloserProcessor,
 )
@@ -117,6 +119,8 @@ class CommonMarkParser(Parser):
             EntityReferenceProcessor,
             HardLinebreakProcessor,
             LinkCloserProcessor,
+            LinkCloserWithDestinationProcessor,
+            LinkCloserWithLabelProcessor,
             LinkOpenerProcessor,
             RawHTMLProcessor,
             SoftLinebreakProcessor,

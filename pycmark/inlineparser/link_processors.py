@@ -22,7 +22,9 @@ from pycmark.utils import (
     ESCAPED_CHARS, escaped_chars_pattern, get_root_document, normalize_link_label, unescape, transplant_nodes
 )
 
-LABEL_NOT_MATCHED = object()
+
+class LabelNotMatched(Exception):
+    pass
 
 
 # 6.5 Links
@@ -49,78 +51,6 @@ class LinkCloserProcessorBase(PatternInlineProcessor):
         else:
             return None
 
-
-class UnmatchedLinkCloserProcessor(LinkCloserProcessorBase):
-    pattern = re.compile(r'\]')
-    priority = 100
-
-    def run(self, reader: TextReader, document: Element) -> bool:
-        opener = self.get_last_opening_brackets(document)
-        if opener is None:
-            reader.step(1)
-            document += Text(']')
-            return True
-        elif not opener['active']:
-            reader.step(1)
-            opener.replace_self(Text(opener['marker']))
-            document += Text(']')
-            return True
-        else:
-            # pass to other LinkCloserProcessors
-            return False
-
-
-class LinkCloserProcessor(LinkCloserProcessorBase):
-    pattern = re.compile(r'\]')
-
-    @backtrack_onerror
-    def run(self, reader: TextReader, document: Element) -> bool:
-        reader.step(1)
-        closer = addnodes.bracket(marker="]", can_open=False, position=reader.position - 1)
-        self.process_link_or_image(reader, document, closer)
-        return True
-
-    def process_link_or_image(self, reader: TextReader, document: Element, closer: addnodes.bracket) -> bool:
-        opener = self.get_last_opening_brackets(document)
-
-        try:
-            if reader.remain.startswith('('):
-                # link destination + link title (optional)
-                #     [...](<.+> ".+")
-                #     [...](.+ ".+")
-                destination, title = self.parse_link_destination(reader, document)
-            elif reader.remain.startswith('['):
-                # link label
-                #     [...][.+]
-                #     [...][]
-                destination, title = self.parse_link_label(reader, document, opener=opener, closer=closer)
-            else:
-                destination = None
-                title = None
-        except (TypeError, ValueError):
-            destination = None
-            title = None
-
-        if destination is None:
-            # shortcut reference link
-            #    [...]
-            refid = reader[opener['position']:closer['position']]
-            target = self.lookup_target(document, refid)
-            if target:
-                destination = target.get('refuri')
-                title = target.get('title')
-            else:
-                # deactivate brackets because no trailing link destination or link-label
-                opener.replace_self(Text(opener['marker']))
-                raise
-        elif destination == LABEL_NOT_MATCHED:
-            opener.replace_self(Text(opener['marker']))
-            raise
-
-        document += self.create_node(title, destination, document, opener)
-        document.remove(opener)
-        return True
-
     def create_node(self, title: str, destination: str, document: Element, opener: addnodes.bracket) -> Element:
         node: Element = None
         if opener['marker'] == '![':
@@ -143,41 +73,131 @@ class LinkCloserProcessor(LinkCloserProcessorBase):
 
         return node
 
+    def lookup_target(self, node: Element, refname: str) -> Element:
+        document = get_root_document(node)
+
+        refname = normalize_link_label(refname)
+        node_id = document.nameids.get(refname)
+        if node_id is None:
+            raise LabelNotMatched
+
+        return document.ids.get(node_id)
+
+
+class UnmatchedLinkCloserProcessor(LinkCloserProcessorBase):
+    pattern = re.compile(r'\]')
+    priority = 100
+
+    def run(self, reader: TextReader, document: Element) -> bool:
+        opener = self.get_last_opening_brackets(document)
+        if opener is None:
+            reader.step(1)
+            document += Text(']')
+            return True
+        elif not opener['active']:
+            reader.step(1)
+            opener.replace_self(Text(opener['marker']))
+            document += Text(']')
+            return True
+        else:
+            # pass to other LinkCloserProcessors
+            return False
+
+
+class LinkCloserWithDestinationProcessor(LinkCloserProcessorBase):
+    # link destination + link title (optional)
+    #     [...](<.+> ".+")
+    #     [...](.+ ".+")
+    pattern = re.compile(r'\]\(')
+    priority = 400
+
     @backtrack_onerror
+    def run(self, reader: TextReader, document: Element) -> bool:
+        opener = self.get_last_opening_brackets(document)
+        if opener is None:
+            return False
+
+        reader.consume(self.pattern)
+        destination, title = self.parse_link_destination(reader, document)
+
+        document += self.create_node(title, destination, document, opener)
+        document.remove(opener)
+        return True
+
     def parse_link_destination(self, reader: TextReader, document: Element) -> Tuple[str, str]:
-        reader.step()
         destination = LinkDestinationParser().parse(reader, document)
         title = LinkTitleParser().parse(reader, document)
         assert reader.consume(re.compile(r'\s*\)'))
 
         return destination, title
 
+
+class LinkCloserWithLabelProcessor(LinkCloserProcessorBase):
+    # link label
+    #     [...][.+]
+    #     [...][]
+    pattern = re.compile(r'\]\[')
+    priority = 400
+
     @backtrack_onerror
-    def parse_link_label(self, reader: TextReader, document: Element, opener: Element = None, closer: Element = None) -> Tuple[object, str]:  # NOQA
-        reader.step()
+    def run(self, reader: TextReader, document: Element) -> bool:
+        opener = self.get_last_opening_brackets(document)
+        if opener is None:
+            return False
+
+        try:
+            reader.consume(self.pattern)
+            destination, title = self.parse_link_label(reader, document, opener)
+            document += self.create_node(title, destination, document, opener)
+            document.remove(opener)
+            return True
+        except LabelNotMatched:
+            # deactivate brackets because no trailing link destination or link-label
+            opener.replace_self(Text(opener['marker']))
+            raise
+
+    def parse_link_label(self, reader: TextReader, document: Element, opener: Element = None) -> Tuple[str, str]:  # NOQA
         refname = LinkLabelParser().parse(reader, document)
         if refname == '':
             # collapsed reference link
             #     [...][]
-            refname = reader[opener['position']:closer['position']]
+            refname = reader[opener['position']:reader.position - 2]
 
         target = self.lookup_target(document, refname)
-        if target:
-            destination = target.get('refuri')
-            title = target.get('title')
-            return destination, title
-        else:
-            return LABEL_NOT_MATCHED, None
+        return target.get('refuri'), target.get('title')
 
-    def lookup_target(self, node: Element, refname: str) -> nodes.Element:
-        document = get_root_document(node)
 
-        refname = normalize_link_label(refname)
-        node_id = document.nameids.get(refname)
-        if node_id is None:
-            return None
+class LinkCloserProcessor(LinkCloserProcessorBase):
+    # shortcut reference link
+    #    [...]
+    pattern = re.compile(r'\]')
 
-        return document.ids.get(node_id)
+    @backtrack_onerror
+    def run(self, reader: TextReader, document: Element) -> bool:
+        opener = self.get_last_opening_brackets(document)
+        if opener is None:
+            return False
+
+        try:
+            reader.consume(self.pattern)
+            destination, title = self.process_link_or_image(reader, document, opener)
+            document += self.create_node(title, destination, document, opener)
+            document.remove(opener)
+            return True
+        except LabelNotMatched:
+            # deactivate brackets because no trailing link destination or link-label
+            opener.replace_self(Text(opener['marker']))
+            raise
+
+    def process_link_or_image(self, reader: TextReader, document: Element, opener: addnodes.bracket) -> Tuple[str, str]:  # NOQA
+        try:
+            refid = reader[opener['position']:reader.position - 1]
+            target = self.lookup_target(document, refid)
+            return target.get('refuri'), target.get('title')
+        except LabelNotMatched:
+            # deactivate brackets because no trailing link destination or link-label
+            opener.replace_self(Text(opener['marker']))
+            raise
 
 
 class LinkDestinationParser:
