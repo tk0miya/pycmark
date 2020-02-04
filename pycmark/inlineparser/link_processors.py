@@ -36,7 +36,37 @@ class LinkOpenerProcessor(PatternInlineProcessor):
         return True
 
 
-class LinkCloserProcessor(PatternInlineProcessor):
+class LinkCloserProcessorBase(PatternInlineProcessor):
+    def get_last_opening_brackets(self, document: Element) -> addnodes.bracket:
+        found = None
+        for node in document:
+            if isinstance(node, addnodes.bracket) and node['can_open']:
+                found = node
+
+        return found
+
+
+class UnmatchedLinkCloserProcessor(LinkCloserProcessorBase):
+    pattern = re.compile(r'\]')
+    priority = 100
+
+    def run(self, reader: TextReader, document: Element) -> bool:
+        opener = self.get_last_opening_brackets(document)
+        if opener is None:
+            reader.step(1)
+            document += Text(']')
+            return True
+        elif not opener['active']:
+            reader.step(1)
+            opener.replace_self(Text(opener['marker']))
+            document += Text(']')
+            return True
+        else:
+            # pass to other LinkCloserProcessors
+            return False
+
+
+class LinkCloserProcessor(LinkCloserProcessorBase):
     pattern = re.compile(r'\]')
 
     def run(self, reader: TextReader, document: Element) -> bool:
@@ -48,17 +78,10 @@ class LinkCloserProcessor(PatternInlineProcessor):
     @backtrack_onerror
     def process_link_or_image(self, reader: TextReader, document: Element) -> bool:
         brackets = list(n for n in document.children if isinstance(n, addnodes.bracket))
-        openers = list(d for d in brackets if d['can_open'])
-        if len(openers) == 0:
-            return True
-
-        opener = openers.pop()
         closer = brackets.pop()
 
-        if not opener['active']:
-            opener.replace_self(Text(opener['marker']))
-            closer.replace_self(Text(closer['marker']))
-            return True
+        openers = list(d for d in brackets if d['can_open'])
+        opener = openers.pop()
 
         try:
             if reader.remain.startswith('('):

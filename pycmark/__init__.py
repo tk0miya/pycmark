@@ -48,6 +48,7 @@ from pycmark.inlineparser import InlineProcessor
 from pycmark.inlineparser.link_processors import (
     LinkCloserProcessor,
     LinkOpenerProcessor,
+    UnmatchedLinkCloserProcessor,
 )
 from pycmark.inlineparser.std_processors import (
     BackslashEscapeProcessor,
@@ -120,6 +121,7 @@ class CommonMarkParser(Parser):
             RawHTMLProcessor,
             SoftLinebreakProcessor,
             URIAutolinkProcessor,
+            UnmatchedLinkCloserProcessor,
         ]
 
     def get_transforms(self) -> List[Type[Transform]]:
